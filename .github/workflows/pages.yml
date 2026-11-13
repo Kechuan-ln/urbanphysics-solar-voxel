@@ -17,6 +17,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Download verified visualization bundle
         run: |
           curl -fL --retry 3 -o site.tar https://github.com/Kechuan-ln/urbanphysics-solar-voxel/releases/download/annual-2022-v1/solar-annual-2022.tar
@@ -24,6 +25,8 @@ jobs:
           mkdir site
           tar -xf site.tar -C site
           test -f site/index.html
+          mkdir -p site/wind-four-panel
+          cp wind-four-panel/index.html site/wind-four-panel/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
