@@ -1,0 +1,32 @@
+name: Publish solar visualization
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified visualization bundle
+        run: |
+          curl -fL --retry 3 -o site.tar https://github.com/Kechuan-ln/urbanphysics-solar-voxel/releases/download/annual-2022-v1/solar-annual-2022.tar
+          echo "34ceaf7da6502006660c592972d1f2c8f5e353d2d113358b7ba00b2a0fc1b015  site.tar" | sha256sum -c -
+          mkdir site
+          tar -xf site.tar -C site
+          test -f site/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
