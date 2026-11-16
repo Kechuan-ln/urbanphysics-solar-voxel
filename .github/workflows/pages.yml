@@ -29,6 +29,8 @@ jobs:
           cp wind-four-panel/index.html site/wind-four-panel/index.html
           mkdir -p site/kowloon-light
           cp kowloon-light/index.html site/kowloon-light/index.html
+          mkdir -p site/kowloon-light/canyon
+          cp kowloon-light/canyon/index.html site/kowloon-light/canyon/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
