@@ -11,7 +11,7 @@ import gzip
 import hashlib
 import json
 import struct
-import subprocess
+import tarfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -165,7 +165,8 @@ def export(source, output, workers):
     (bundle / "index.json").write_text(json.dumps(info, separators=(",", ":")) + "\n")
     pending = output / "kowloon-volume.pending.tar"
     target = output / "kowloon-volume.tar"
-    subprocess.run(["tar", "--sort=name", "-C", str(bundle), "-cf", str(pending), "."], check=True)
+    with tarfile.open(pending, "w") as archive:
+        archive.add(bundle, arcname=".")
     if pending.stat().st_size > ASSET_LIMIT:
         raise ValueError(f"volume pack exceeds the Pages budget: {pending.stat().st_size}")
     digest = hashlib.sha256()
