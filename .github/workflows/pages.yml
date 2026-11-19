@@ -34,6 +34,14 @@ jobs:
           mkdir -p site/kowloon-light/1km
           cp -R kowloon-light/1km/. site/kowloon-light/1km/
           test -s site/kowloon-light/1km/demo.json
+      - name: Install verified full-resolution sections
+        run: |
+          curl -fL --retry 3 -o kowloon-sections.tar https://github.com/Kechuan-ln/urbanphysics-solar-voxel/releases/download/kowloon-1km-three-hours-v2/kowloon-sections.tar
+          echo "4f8327d1f6f2cb464eddf5778568c93a9c07a6543b73321dc7edfdeb99424137  kowloon-sections.tar" | sha256sum -c -
+          mkdir -p site/kowloon-light/1km/data/full
+          tar -xf kowloon-sections.tar -C site/kowloon-light/1km/data/full
+          test -s site/kowloon-light/1km/data/full/index.json
+          test -s site/kowloon-light/1km/demo-full.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

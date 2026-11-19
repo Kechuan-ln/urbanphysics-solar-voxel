@@ -14,7 +14,7 @@ const fieldUnit = "W/(m²·sr)";
 const orbit = {yaw: .57, pitch: .98, zoom: 1, target: [0, 0, 52]};
 const layouts = new Map();
 const frames = new Map();
-let meta, demo, renderer, solarTrack, snapshot, samples, drag, cutDrag, pickedCell;
+let meta, demo, sections, renderer, solarTrack, snapshot, samples, drag, cutDrag, pickedCell;
 let area = "overview", selectedTile = "5-5", cutMode = false;
 let metric = "direct", lensMetric = "scatter", exactBin = null;
 let stageHour, displayBin = -1, rAF = 0, request = 0, controller, timeDelay;
@@ -50,12 +50,13 @@ function tileOrigin() {
 
 function section() {
   if (!cutMode) return null;
-  const origin = tileOrigin();
   const axis = Number($("cut-axis").value), index = Number($("cut-position").value);
-  const position = origin[axis] + 2.5 + index * 5;
+  const origin = sections ? null : tileOrigin();
+  const position = sections ? sections.position(index) : origin[axis] + 2.5 + index * 5;
+  const start = sections ? sections.origin : origin[1 - axis];
   const side = (axis === 0 ? Math.sin(orbit.yaw) : Math.cos(orbit.yaw)) >= 0 ? 1 : -1;
   const normal = axis === 0 ? [side, 0] : [0, side];
-  return {axis, index, position, start: origin[1 - axis], clip: [...normal, side * position]};
+  return {axis, index, position, start, span: sections?.span ?? 100, clip: [...normal, side * position]};
 }
 
 function sectionPoint(slice, along, up) {
@@ -68,8 +69,8 @@ function glState() {
   if (slice) {
     const minZ = samples?.minZ ?? 8, maxZ = samples?.maxZ ?? 145;
     const a = sectionPoint(slice, slice.start, minZ - 2.5);
-    const b = sectionPoint(slice, slice.start + 100, minZ - 2.5);
-    const c = sectionPoint(slice, slice.start + 100, maxZ + 2.5);
+    const b = sectionPoint(slice, slice.start + slice.span, minZ - 2.5);
+    const c = sectionPoint(slice, slice.start + slice.span, maxZ + 2.5);
     const d = sectionPoint(slice, slice.start, maxZ + 2.5);
     guides.push([[...a, ...b, ...b, ...c, ...c, ...d, ...d, ...a], [.51, .89, .85, .74]]);
   }
@@ -87,7 +88,7 @@ function placeHandle() {
   const slice = section(), handle = $("cut-handle");
   handle.hidden = !slice;
   if (!slice) return;
-  const [x, y] = screenPoint(sectionPoint(slice, slice.start + 50, (samples?.maxZ ?? 145) + 3));
+  const [x, y] = screenPoint(sectionPoint(slice, slice.start + slice.span / 2, (samples?.maxZ ?? 145) + 3));
   handle.style.left = `${Math.max(52, Math.min(canvas.clientWidth - 52, x))}px`;
   // Keep the handle clear of the time and compass overlays while zooming in.
   handle.style.top = `${Math.max(116, Math.min(canvas.clientHeight - 28, y))}px`;
@@ -229,19 +230,35 @@ async function get(url, signal) {
 }
 
 function fieldScope() {
+  if (sections && cutMode) {
+    const {axis, index} = section();
+    return `section=${axis}&index=${index}`;
+  }
   return `area=${area}&height=${cutMode ? "all" : $("height").value}`;
 }
 
 function activeSnapshot() {
-  return snapshot?.hour === stageHour && snapshot?.scope === fieldScope() ? snapshot : null;
+  if (snapshot?.hour !== stageHour || snapshot?.scope !== fieldScope()) return null;
+  return metric === "reflection" && snapshot.reflectionLoaded === false ? null : snapshot;
+}
+
+function wantsReflection() {
+  return metric === "reflection" || Boolean(pickedCell && lensMetric === "reflection");
 }
 
 function showSnapshot(frame) {
   snapshot = frame;
   $("progress").hidden = true;
-  $("status").textContent = cutMode ? "街谷剖切 · 原始 5 米体素" :
+  $("status").textContent = cutMode ? `${sections ? "全区" : "街谷"}剖切 · 原始 5 米体素` :
     area === "overview" ? "全区 · 水平 25 米抽样" : "局部 · 原始 5 米体素";
   updateField();
+}
+
+function cacheFrame(key, frame) {
+  frames.delete(key);
+  frames.set(key, frame);
+  if (frames.size > 5) frames.delete(frames.keys().next().value);
+  showSnapshot(frame);
 }
 
 async function load() {
@@ -257,15 +274,14 @@ async function load() {
   const key = `${scope}&hour=${hour}`;
   if (!$("show-field").checked) {
     updateField();
-    $("status").textContent = cutMode ? "街谷剖切 · 实景阴影" : "实景阴影 · 随太阳位置更新";
+    $("status").textContent = cutMode ? "剖切 · 实景阴影" : "实景阴影 · 随太阳位置更新";
     $("progress").hidden = true;
     return;
   }
-  if (frames.has(key)) {
-    const frame = frames.get(key);
-    frames.delete(key);
-    frames.set(key, frame);
-    showSnapshot(frame);
+  const cached = frames.get(key);
+  const needReflection = wantsReflection();
+  if (cached && (!needReflection || cached.reflectionLoaded !== false)) {
+    cacheFrame(key, cached);
     return;
   }
   updateField();
@@ -274,6 +290,14 @@ async function load() {
   $("progress").hidden = false;
   $("progress").removeAttribute("value");
   try {
+    if (sections && cutMode) {
+      const {axis, index} = section();
+      const field = await sections.read(axis, index, hour, needReflection, signal);
+      if (id !== request) return;
+      if (!layouts.has(scope)) layouts.set(scope, field.points);
+      cacheFrame(key, {...field, points: layouts.get(scope), hour, scope, sun: sunAt(hour)});
+      return;
+    }
     if (!layouts.has(scope)) {
       const response = await get(`./api/coords?${scope}`, signal);
       layouts.set(scope, new Float32Array(await response.arrayBuffer()));
@@ -296,10 +320,7 @@ async function load() {
     };
     const field = decode(await response.arrayBuffer(), points.length / 4);
     if (id !== request) return;
-    const frame = {points, hour, sun, scope, ...field};
-    frames.set(key, frame);
-    if (frames.size > 5) frames.delete(frames.keys().next().value);
-    showSnapshot(frame);
+    cacheFrame(key, {points, hour, sun, scope, ...field});
   } catch (error) {
     if (id !== request || error.name === "AbortError") return;
     $("progress").hidden = true;
@@ -383,7 +404,7 @@ function updateField() {
   samples = null;
   if (slice) {
     const axisLabel = slice.axis === 0 ? "东" : "北";
-    $("cut-value").textContent = `${axisLabel} ${slice.position} m · ${slice.index + 1}/20`;
+    $("cut-value").textContent = `${axisLabel} ${slice.position} m · ${slice.index + 1}/${sections?.size ?? 20}`;
     $("cut-position").setAttribute("aria-valuetext", $("cut-value").textContent);
   }
   if (!frame || !$("show-field").checked) {
@@ -452,8 +473,8 @@ function resetView() {
   const slice = section();
   orbit.yaw = slice ? (slice.axis === 0 ? 1.42 : .17) : .57;
   orbit.pitch = slice ? 1.04 : .98;
-  orbit.zoom = slice ? 6 : area === "overview" ? 1 : 4.6;
-  const [east, north] = area === "overview" ? [-50, -50] : tileOrigin();
+  orbit.zoom = slice ? (sections ? 1.33 : 6) : area === "overview" ? 1 : 4.6;
+  const [east, north] = area === "overview" || area === "full" ? [-50, -50] : tileOrigin();
   orbit.target = [east + 50, north + 50, slice ? 77 : area === "overview" ? 52 : 65];
   draw();
 }
@@ -464,7 +485,7 @@ function changeArea(next, useCut) {
   cutMode = useCut;
   pickedCell = null;
   if (next !== "overview") {
-    selectedTile = next;
+    if (next !== "full") selectedTile = next;
     $("show-field").checked = true;
   }
   for (const btn of document.querySelectorAll("#tiles button")) {
@@ -483,6 +504,8 @@ function updateScopeNote() {
   if (area === "overview") {
     $("scope-note").textContent = demo ? `1 km² 实景 · 距地 ${demo.overviewHeight} 米光场 · 水平 25 米抽样` :
       "整个 1 km² · 水平 25 米抽样 · 垂直 5 米";
+  } else if (area === "full") {
+    $("scope-note").textContent = `剖切贯穿 1 km² · 每轴 ${sections.size} 个切面 · 原始 5 米体素`;
   } else {
     $("scope-note").textContent = `图块 ${Number(area[0])+1}, ${Number(area[2])+1} · 100 × 100 米 · 原始 5 米体素`;
   }
@@ -526,6 +549,11 @@ function drawLens() {
   $("lens-note").textContent = `金圈 · 太阳直射 ${direct} · 空心灰点为未知`;
   const c = lens.getContext("2d");
   c.clearRect(0, 0, lens.width, lens.height);
+  if (lensMetric === "reflection" && frame.reflectionLoaded === false) {
+    lensDots = [];
+    $("lens-selection").textContent = "正在读取反射方向";
+    return;
+  }
   const circle = (x, y, r) => { c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); };
   for (const [x, label] of [[160, "向下传播"], [480, "向上传播"]]) {
     circle(x, disc.y, disc.radius);
@@ -599,6 +627,7 @@ function picked(event) {
   samples.selection = selected;
   drawLens();
   draw();
+  if (wantsReflection() && frame.reflectionLoaded === false) load();
 }
 
 function setLensMetric(next) {
@@ -629,6 +658,13 @@ function setAngles(direction) {
 function moveCut() {
   pickedCell = null;
   updateField();
+  if (sections && cutMode && $("show-field").checked) {
+    request++;
+    controller?.abort();
+    clearTimeout(timeDelay);
+    $("status").textContent = "正在切换剖面";
+    timeDelay = setTimeout(load, 100);
+  }
 }
 
 function bind() {
@@ -648,6 +684,14 @@ function bind() {
     $("height").add(new Option(demo.overviewHeight + " m", demo.overviewHeight));
     $("height").disabled = true;
     $("tile-note").textContent = "北 ↑ · 5 米剖切样区";
+    $("prev").setAttribute("aria-label", "上一个时刻");
+    $("next").setAttribute("aria-label", "下一个时刻");
+    if (sections) {
+      $("section-mode").textContent = "全区剖切";
+      $("cut-position").max = sections.size - 1;
+      $("cut-position").value = 118;
+      $("tile-note").textContent = "北 ↑ · 点选位置跳转剖面";
+    }
   } else {
     $("date").min = timeLabel(0).slice(0, 10);
     $("date").max = timeLabel(meta.hours - 1).slice(0, 10);
@@ -662,16 +706,24 @@ function bind() {
       b.title = `第 ${x+1} 列，第 ${y+1} 行`;
       b.setAttribute("aria-label", b.title);
       b.setAttribute("aria-pressed", "false");
-      if (demo) {
+      if (demo && !sections) {
         b.disabled = b.dataset.tile !== demo.section;
         if (!b.disabled) b.dataset.available = "true";
       }
-      b.onclick = () => changeArea(b.dataset.tile, Boolean(demo) || cutMode);
+      b.onclick = () => {
+        if (!sections) {
+          changeArea(b.dataset.tile, Boolean(demo) || cutMode);
+          return;
+        }
+        const tile = Number($("cut-axis").value) === 0 ? x : y;
+        $("cut-position").value = 20 * tile + 10;
+        if (cutMode) moveCut(); else changeArea("full", true);
+      };
       $("tiles").append(b);
     }
   }
   $("overview").onclick = () => changeArea("overview", false);
-  $("section-mode").onclick = () => changeArea(selectedTile, true);
+  $("section-mode").onclick = () => changeArea(sections ? "full" : selectedTile, true);
   updateScopeNote();
   $("date").onchange = load;
   $("time-hour").onchange = load;
@@ -738,7 +790,7 @@ function bind() {
     const dx = event.clientX - cutDrag.x, dy = event.clientY - cutDrag.y;
     const meters = (dx * nx + dy * ny) / (pixelsPerMeter() * (nx * nx + ny * ny));
     if (!Number.isFinite(meters)) return;
-    const index = Math.max(0, Math.min(19, cutDrag.index + Math.round(meters / 5)));
+    const index = Math.max(0, Math.min(Number($("cut-position").max), cutDrag.index + Math.round(meters / 5)));
     if (Number($("cut-position").value) === index) return;
     $("cut-position").value = index;
     moveCut();
@@ -757,7 +809,11 @@ function bind() {
     drawLens();
     draw();
   };
-  $("lens-component").onchange = () => { setLensMetric($("lens-component").value); drawLens(); };
+  $("lens-component").onchange = () => {
+    setLensMetric($("lens-component").value);
+    drawLens();
+    if (wantsReflection() && activeSnapshot()?.reflectionLoaded === false) load();
+  };
   lens.onpointermove = (event) => describeBin(lensHit(event) ?? (metric === lensMetric ? lensDots[displayBin] : null));
   lens.onpointerleave = () => describeBin(metric === lensMetric ? lensDots[displayBin] : null);
   lens.onclick = (event) => {
@@ -803,10 +859,15 @@ async function init() {
   try {
     renderer = makeRenderer(canvas);
     if (document.body.hasAttribute("data-demo")) {
-      demo = await (await get("./demo.json")).json();
+      const manifest = document.body.dataset.demo || "demo.json";
+      demo = await (await get(`./${manifest}`)).json();
       meta = demo.meta;
       selectedTile = demo.section;
-      $("summary").textContent = `1 km² 实景 · 5 米剖切 · ${demo.hours.length} 个时刻`;
+      if (demo.sectionData) {
+        const {openSections} = await import("./sections.mjs?v=1");
+        sections = await openSections(demo.sectionData, demo);
+      }
+      $("summary").textContent = `1 km² 实景 · ${sections ? "全区 " : ""}5 米剖切 · ${demo.hours.length} 个时刻`;
     } else {
       const [info, solar] = await Promise.all([
         get("./api/meta").then(r => r.json()),
