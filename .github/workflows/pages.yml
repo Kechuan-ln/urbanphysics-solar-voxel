@@ -31,6 +31,9 @@ jobs:
           cp kowloon-light/index.html site/kowloon-light/index.html
           mkdir -p site/kowloon-light/canyon
           cp kowloon-light/canyon/index.html site/kowloon-light/canyon/index.html
+          mkdir -p site/kowloon-light/1km
+          cp -R kowloon-light/1km/. site/kowloon-light/1km/
+          test -s site/kowloon-light/1km/demo.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
