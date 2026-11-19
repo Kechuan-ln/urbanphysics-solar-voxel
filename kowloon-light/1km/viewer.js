@@ -968,7 +968,7 @@ async function init() {
         sections = await openSections(demo.sectionData, demo);
       }
       if (demo.volumeData) {
-        const api = await import("./volume.mjs?v=1");
+        const api = await import("./volume.mjs?v=2");
         volumes = await api.openVolume(demo.volumeData, demo, sections?.voxels);
         createVolumePass = api.makeVolumePass;
         area = "volume";

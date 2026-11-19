@@ -73,6 +73,10 @@ void main() {
         ? mix(vec3(0.18, 0.47, 0.71), vec3(0.55, 0.92, 1.0), strength)
         : mix(vec3(0.43, 0.29, 0.63), vec3(0.98, 0.70, 0.85), strength);
       density = strength * (0.0032 + 0.008 * strength * strength);
+      if (uComponent == 1) density *= 0.58;
+      vec2 within = point.xy - uOrigin;
+      vec2 border = min(within, uCell * vec2(uGrid.xy) - within);
+      density *= smoothstep(0.0, 2.0 * uCell, min(border.x, border.y));
     }
     density *= 1.0 - smoothstep(uTop - 4.0, uTop, agl);
     float alpha = 1.0 - exp(-density * uCell * uOpacity);
