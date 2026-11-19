@@ -100,7 +100,7 @@ output { font-variant-numeric: tabular-nums; }
 }
 </style>
 </head>
-<body data-demo="demo-full.json">
+<body data-demo="demo-volume.json">
 <header><h1>九龙 · 三维光场演示</h1><div id="summary">正在载入演示</div></header>
 <main>
 <aside aria-label="光场查询">
@@ -166,6 +166,10 @@ output { font-variant-numeric: tabular-nums; }
       <h2><label for="height">距地高度</label></h2>
       <select id="height"></select>
     </div>
+    <div id="volume-controls" hidden>
+      <label class="pair" for="volume-top">体渲染距地上限 <output id="volume-top-value">120 m</output></label>
+      <input type="range" id="volume-top" min="5" max="120" step="5" value="120">
+    </div>
     <label class="pair" for="opacity">显示浓度 <output id="op-value">60%</output></label>
     <input type="range" id="opacity" min="10" max="100" value="60">
     <div class="check-row">
@@ -214,6 +218,6 @@ output { font-variant-numeric: tabular-nums; }
   <div id="help">拖动旋转 · Shift 拖动平移 · 滚轮缩放 · 点击体素查看方向</div>
 </div>
 </main>
-<script type="module" src="./viewer.js?v=section-v4"></script>
+<script type="module" src="./viewer.js?v=volume-v1"></script>
 </body>
 </html>

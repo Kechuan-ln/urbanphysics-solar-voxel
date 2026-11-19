@@ -42,6 +42,14 @@ jobs:
           tar -xf kowloon-sections.tar -C site/kowloon-light/1km/data/full
           test -s site/kowloon-light/1km/data/full/index.json
           test -s site/kowloon-light/1km/demo-full.json
+      - name: Install verified volume color layers
+        run: |
+          curl -fL --retry 3 -o kowloon-volume.tar https://github.com/Kechuan-ln/urbanphysics-solar-voxel/releases/download/kowloon-volume-three-hours-v3/kowloon-volume.tar
+          echo "e5c5808231db28d9b71ce5a1caa393b23847f5cf9fd352a1d4eba07cd9fab376  kowloon-volume.tar" | sha256sum -c -
+          mkdir -p site/kowloon-light/1km/data/volume
+          tar -xf kowloon-volume.tar -C site/kowloon-light/1km/data/volume
+          test -s site/kowloon-light/1km/data/volume/index.json
+          test -s site/kowloon-light/1km/demo-volume.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,4 +1,4 @@
-import {boxOutline, makeRenderer} from "./scene.mjs?v=section-v2";
+import {boxOutline, makeRenderer} from "./scene.mjs?v=volume-v1";
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("scene");
@@ -15,6 +15,8 @@ const orbit = {yaw: .57, pitch: .98, zoom: 1, target: [0, 0, 52]};
 const layouts = new Map();
 const frames = new Map();
 let meta, demo, sections, renderer, solarTrack, snapshot, samples, drag, cutDrag, pickedCell;
+let volumes, volumeFrame, pendingPick;
+let directVolumeAway = false;
 let area = "overview", selectedTile = "5-5", cutMode = false;
 let metric = "direct", lensMetric = "scatter", exactBin = null;
 let stageHour, displayBin = -1, rAF = 0, request = 0, controller, timeDelay;
@@ -63,6 +65,14 @@ function sectionPoint(slice, along, up) {
   return slice.axis === 0 ? [slice.position, along, up] : [along, slice.position, up];
 }
 
+function volumeKey() {
+  return `${stageHour}:${metric}:${metric === "direct" ? -1 : displayBin}`;
+}
+
+function volumeVisible() {
+  return area === "volume" && volumeFrame === volumeKey() && $("show-field").checked && !directVolumeAway;
+}
+
 function glState() {
   const slice = section();
   const guides = [];
@@ -81,6 +91,10 @@ function glState() {
     orbit, scale: pixelsPerMeter(), guides, sun: sunAt(stageHour), cut: slice?.clip ?? [0, 0, 0],
     showMesh: $("show-mesh").checked, showField: Boolean(samples && $("show-field").checked),
     fog: metric !== "direct", opacity: Number($("opacity").value) / 100,
+    volume: volumeVisible() ? {
+      metric, height: Number($("volume-top").value), showUnknown: $("show-unknown").checked,
+      interacting: Boolean(drag?.d > 3),
+    } : null,
   };
 }
 
@@ -248,6 +262,17 @@ function wantsReflection() {
 
 function showSnapshot(frame) {
   snapshot = frame;
+  if (cutMode && pendingPick) {
+    const [east, north, , agl] = pendingPick;
+    const points = frame.points;
+    for (let p = 0; p < points.length; p += 4) {
+      if (points[p] === east && points[p + 1] === north && points[p + 3] === agl) {
+        pickedCell = {points, index: p / 4};
+        break;
+      }
+    }
+    pendingPick = null;
+  }
   $("progress").hidden = true;
   $("status").textContent = cutMode ? `${sections ? "全区" : "街谷"}剖切 · 原始 5 米体素` :
     area === "overview" ? "全区 · 水平 25 米抽样" : "局部 · 原始 5 米体素";
@@ -290,6 +315,24 @@ async function load() {
   $("progress").hidden = false;
   $("progress").removeAttribute("value");
   try {
+    if (area === "volume") {
+      if (directVolumeAway) {
+        $("status").textContent = "当前方向无太阳直射";
+        $("progress").hidden = true;
+        return;
+      }
+      const target = volumeKey();
+      if (target !== volumeFrame) {
+        const bytes = await volumes.read(hour, metric, displayBin, signal);
+        if (id !== request) return;
+        renderer.setVolumeField(bytes);
+        volumeFrame = target;
+      }
+      $("progress").hidden = true;
+      $("status").textContent = "全区体渲染 · 原始 5 米网格";
+      updateField();
+      return;
+    }
     if (sections && cutMode) {
       const {axis, index} = section();
       const field = await sections.read(axis, index, hour, needReflection, signal);
@@ -379,9 +422,9 @@ function directionState(sun) {
   return {direct, directAway};
 }
 
-function setLegend(direct, fog) {
-  const shown = $("show-field").checked && Boolean(samples);
-  $("legend-title").textContent = shown ? `${labels[metric]} · ${direct ? "W/m²" : fieldUnit}` : "实景阴影";
+function setLegend(direct, fog, shown = $("show-field").checked && Boolean(samples)) {
+  const unit = direct ? (area === "volume" ? "光照与遮挡" : "W/m²") : fieldUnit;
+  $("legend-title").textContent = shown ? `${labels[metric]} · ${unit}` : "实景阴影";
   $("shadow-key").hidden = shown && !direct;
   $("field-key").hidden = !shown || direct;
   if (fog) {
@@ -400,6 +443,17 @@ function updateField() {
   const fog = fogScales[metric];
   $("metric-note").textContent = direct ? "直射法向辐照度" :
     metric === "scatter" ? "天空散射的方向辐亮度" : "建筑、地面和远场反射的方向辐亮度";
+  if (area === "volume") {
+    directVolumeAway = directAway;
+    samples = null;
+    $("point").hidden = true;
+    const shown = volumeVisible();
+    $("coverage").textContent = shown ?
+      `距地 0–${$("volume-top").value} m · 点击光场查询原始体素` : "阴影由实景网格投影";
+    setLegend(direct, fog, shown);
+    draw();
+    return;
+  }
   const frame = activeSnapshot(), slice = section();
   samples = null;
   if (slice) {
@@ -471,37 +525,49 @@ function updateField() {
 
 function resetView() {
   const slice = section();
+  const overview = area === "overview" || area === "volume";
   orbit.yaw = slice ? (slice.axis === 0 ? 1.42 : .17) : .57;
   orbit.pitch = slice ? 1.04 : .98;
-  orbit.zoom = slice ? (sections ? 1.33 : 6) : area === "overview" ? 1 : 4.6;
-  const [east, north] = area === "overview" || area === "full" ? [-50, -50] : tileOrigin();
+  orbit.zoom = slice ? (sections ? 1.33 : 6) : overview ? 1 : 4.6;
+  const [east, north] = overview || area === "full" ? [-50, -50] : tileOrigin();
   orbit.target = [east + 50, north + 50, slice ? 77 : area === "overview" ? 52 : 65];
   draw();
 }
 
-function changeArea(next, useCut) {
+function viewControls() {
+  $("overview").setAttribute("aria-pressed", String(area === "overview" || area === "volume"));
+  $("section-mode").setAttribute("aria-pressed", String(cutMode));
+  $("cut-controls").hidden = !cutMode;
+  $("height-controls").hidden = cutMode || area === "volume";
+  if (volumes) $("volume-controls").hidden = area !== "volume";
+  $("help").textContent = area === "volume" ?
+    "拖动旋转 · Shift 平移 · 滚轮缩放 · 点击光场打开体素剖面" :
+    "拖动旋转 · Shift 平移 · 滚轮缩放 · 点击体素查看方向";
+}
+
+function changeArea(next, useCut, target = null) {
   if (area === next && cutMode === useCut) return;
   area = next;
   cutMode = useCut;
   pickedCell = null;
+  pendingPick = target;
   if (next !== "overview") {
-    if (next !== "full") selectedTile = next;
+    if (next !== "full" && next !== "volume") selectedTile = next;
     $("show-field").checked = true;
   }
   for (const btn of document.querySelectorAll("#tiles button")) {
     btn.setAttribute("aria-pressed", String(btn.dataset.tile === next));
   }
-  $("overview").setAttribute("aria-pressed", String(next === "overview"));
-  $("section-mode").setAttribute("aria-pressed", String(cutMode));
-  $("cut-controls").hidden = !cutMode;
-  $("height-controls").hidden = cutMode;
+  viewControls();
   updateScopeNote();
   resetView();
   load();
 }
 
 function updateScopeNote() {
-  if (area === "overview") {
+  if (area === "volume") {
+    $("scope-note").textContent = "1 km² · 5 米三维网格";
+  } else if (area === "overview") {
     $("scope-note").textContent = demo ? `1 km² 实景 · 距地 ${demo.overviewHeight} 米光场 · 水平 25 米抽样` :
       "整个 1 km² · 水平 25 米抽样 · 垂直 5 米";
   } else if (area === "full") {
@@ -617,10 +683,21 @@ function lensHit(event) {
 }
 
 function picked(event) {
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left, y = event.clientY - rect.top;
+  if (area === "volume") {
+    const id = renderer.pickVolume(x, y, glState());
+    if (id < 0) return;
+    const cell = volumes.cell(id);
+    $("cut-axis").value = "1";
+    $("cut-position").value = cell.y;
+    setLensMetric(metric === "direct" ? "scatter" : metric);
+    changeArea("full", true, cell.point);
+    return;
+  }
   const frame = activeSnapshot();
   if (!frame || !samples) return;
-  const rect = canvas.getBoundingClientRect();
-  const index = renderer.pick(event.clientX - rect.left, event.clientY - rect.top, glState());
+  const index = renderer.pick(x, y, glState());
   const selected = samples.visible[index];
   if (selected && metric !== "direct") setLensMetric(metric);
   pickedCell = selected ? {points: frame.points, index: selected.i} : null;
@@ -657,6 +734,7 @@ function setAngles(direction) {
 
 function moveCut() {
   pickedCell = null;
+  pendingPick = null;
   updateField();
   if (sections && cutMode && $("show-field").checked) {
     request++;
@@ -667,11 +745,26 @@ function moveCut() {
   }
 }
 
+function refreshDirection() {
+  updateField();
+  if (area === "volume") {
+    request++;
+    controller?.abort();
+    clearTimeout(timeDelay);
+    timeDelay = setTimeout(load, 100);
+  }
+}
+
 function bind() {
   const timeOptions = demo ? demo.hours.map(h => timeLabel(h).slice(11, 13)) :
     Array.from({length: 24}, (_, i) => String(i).padStart(2, "0"));
   for (const t of timeOptions) {
     $("time-hour").add(new Option(t + ":00", t));
+  }
+  if (volumes) {
+    $("overview").textContent = "全区光场";
+    $("section-mode").textContent = "5 米剖切";
+    $("show-field").checked = true;
   }
   if (demo) {
     $("date").readOnly = true;
@@ -687,7 +780,7 @@ function bind() {
     $("prev").setAttribute("aria-label", "上一个时刻");
     $("next").setAttribute("aria-label", "下一个时刻");
     if (sections) {
-      $("section-mode").textContent = "全区剖切";
+      $("section-mode").textContent = volumes ? "5 米剖切" : "全区剖切";
       $("cut-position").max = sections.size - 1;
       $("cut-position").value = 118;
       $("tile-note").textContent = "北 ↑ · 点选位置跳转剖面";
@@ -722,9 +815,10 @@ function bind() {
       $("tiles").append(b);
     }
   }
-  $("overview").onclick = () => changeArea("overview", false);
+  $("overview").onclick = () => changeArea(volumes ? "volume" : "overview", false);
   $("section-mode").onclick = () => changeArea(sections ? "full" : selectedTile, true);
   updateScopeNote();
+  viewControls();
   $("date").onchange = load;
   $("time-hour").onchange = load;
   $("retry").onclick = load;
@@ -752,17 +846,17 @@ function bind() {
     const b = event.target.closest("button[data-metric]");
     if (!b) return;
     setMetric(b.dataset.metric);
-    if (activeSnapshot()) updateField(); else load();
+    if (area !== "volume" && activeSnapshot()) updateField(); else load();
   };
   $("direction").options[0].disabled = true;
   $("direction").onchange = () => {
     exactBin = null;
     const p = enu[$("direction").value];
     if (p) setAngles(p);
-    updateField();
+    refreshDirection();
   };
   for (const id of ["az", "alt"]) {
-    $(id).oninput = () => { exactBin = null; $("direction").value = "custom"; updateField(); };
+    $(id).oninput = () => { exactBin = null; $("direction").value = "custom"; refreshDirection(); };
   }
   $("height").onchange = () => { pickedCell = null; load(); };
   $("show-field").onchange = load;
@@ -772,6 +866,12 @@ function bind() {
     $("op-value").textContent = $("opacity").value + "%";
     draw();
   };
+  if (volumes) {
+    $("volume-top").oninput = () => {
+      $("volume-top-value").textContent = $("volume-top").value + " m";
+      updateField();
+    };
+  }
   $("reset").onclick = resetView;
   $("cut-position").oninput = moveCut;
   $("cut-axis").onchange = () => { resetView(); moveCut(); };
@@ -845,8 +945,8 @@ function bind() {
     drag.y = e.clientY;
     draw();
   };
-  canvas.onpointerup = (e) => { if (drag?.d < 4) picked(e); drag = null; };
-  canvas.onpointercancel = () => { drag = null; };
+  canvas.onpointerup = (e) => { if (drag?.d < 4) picked(e); drag = null; draw(); };
+  canvas.onpointercancel = () => { drag = null; draw(); };
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
     orbit.zoom = Math.max(.4, Math.min(22, orbit.zoom * Math.exp(-e.deltaY*.001)));
@@ -857,17 +957,24 @@ function bind() {
 
 async function init() {
   try {
-    renderer = makeRenderer(canvas);
+    let createVolumePass;
     if (document.body.hasAttribute("data-demo")) {
       const manifest = document.body.dataset.demo || "demo.json";
       demo = await (await get(`./${manifest}`)).json();
       meta = demo.meta;
       selectedTile = demo.section;
       if (demo.sectionData) {
-        const {openSections} = await import("./sections.mjs?v=1");
+        const {openSections} = await import("./sections.mjs?v=2");
         sections = await openSections(demo.sectionData, demo);
       }
-      $("summary").textContent = `1 km² 实景 · ${sections ? "全区 " : ""}5 米剖切 · ${demo.hours.length} 个时刻`;
+      if (demo.volumeData) {
+        const api = await import("./volume.mjs?v=1");
+        volumes = await api.openVolume(demo.volumeData, demo, sections?.voxels);
+        createVolumePass = api.makeVolumePass;
+        area = "volume";
+      }
+      const view = volumes ? "5 米全区体渲染" : sections ? "全区 5 米剖切" : "5 米剖切";
+      $("summary").textContent = `1 km² 实景 · ${view} · ${demo.hours.length} 个时刻`;
     } else {
       const [info, solar] = await Promise.all([
         get("./api/meta").then(r => r.json()),
@@ -878,7 +985,10 @@ async function init() {
       solarTrack = new Float32Array(solar);
       $("summary").textContent = `1 km² · 5 米网格 · ${meta.voxels.toLocaleString("zh-CN")} 个空气体素 · ${meta.hours.toLocaleString("zh-CN")} 小时`;
     }
+    renderer = makeRenderer(canvas, createVolumePass);
+    if (volumes) renderer.setVolumeGrid(volumes.meta, volumes.ground);
     bind();
+    if (volumes) resetView();
     const firstLight = demo?.hours[0] ?? Math.max(0, meta.default_hour - 8);
     chooseTime(firstLight);
     load();

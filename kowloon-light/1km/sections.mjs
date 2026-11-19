@@ -1,7 +1,7 @@
 // Assemble one full-width cut from the same native tiles in either orientation.
-async function binary(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw Error(`光场地块读取失败（${response.status}）`);
+export async function binary(url, signal) {
+  const response = await fetch(url, {signal});
+  if (!response.ok) throw Error(`光场资源读取失败（${response.status}）`);
   const buffer = await response.arrayBuffer();
   const bytes = new Uint8Array(buffer, 0, Math.min(3, buffer.byteLength));
   if (bytes[0] !== 31 || bytes[1] !== 139 || bytes[2] !== 8) return buffer;

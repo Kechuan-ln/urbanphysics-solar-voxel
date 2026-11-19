@@ -51,7 +51,7 @@ function solarBasis(propagation) {
   return {source, right, up};
 }
 
-export function makeRenderer(canvas) {
+export function makeRenderer(canvas, createVolumePass) {
   const gl = canvas.getContext("webgl2", {antialias: true, alpha: false});
   if (!gl) throw Error("浏览器需要支持 WebGL 2");
 
@@ -284,8 +284,14 @@ export function makeRenderer(canvas) {
     return {dpr, w, h};
   }
 
+  const volume = createVolumePass?.(gl, program, bindCamera);
   return {
     get supportsShadows() { return shadowReady; },
+    setVolumeGrid(meta, ground) { volume.setGrid(meta, ground); },
+    setVolumeField(data) { volume.setField(data); },
+    pickVolume(x, y, state) {
+      return state.volume ? volume.pick(x / canvas.clientWidth, y / canvas.clientHeight, state) : -1;
+    },
     setMesh(buffer, image) {
       const head = new DataView(buffer);
       const n = head.getUint32(0, true);
@@ -332,6 +338,7 @@ export function makeRenderer(canvas) {
       if (state.showMesh && meshIndices && sunUp && shadowReady) {
         updateShadow(basis, illumination.direction.join(","));
       }
+      if (state.volume) volume.begin(w, h);
       gl.viewport(0, 0, w, h);
       gl.clearColor(.055, .086, .111, 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -347,6 +354,10 @@ export function makeRenderer(canvas) {
         gl.bindTexture(gl.TEXTURE_2D, photo);
         gl.uniform1i(city.uniform.uPhoto, 0);
         drawMesh();
+      }
+      if (state.volume) {
+        volume.finish(state, w, h);
+        return;
       }
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
