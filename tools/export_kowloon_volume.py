@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 DEPTH = 24
+TONE_STEPS = 125
 CAPS = {"scatter": 60.0, "reflection": 30.0}
 ASSET_LIMIT = 310_000_000
 
@@ -27,7 +28,7 @@ def encode(values, flags, cap):
     if np.any((flags != 0) & ~np.isfinite(values)):
         raise ValueError("non-finite known radiance")
     unit = np.sqrt(np.clip(np.where(flags, values, 0) / cap, 0, 1))
-    return np.where(flags, 2 + np.rint(253 * unit), 1).astype("u1")
+    return np.where(flags, 2 + np.rint(TONE_STEPS * unit), 1).astype("u1")
 
 
 def mean(values, flags):
@@ -94,7 +95,7 @@ def export(source, output, workers):
             xy = np.rint((pts[:, :2] - meta["origin"]) / step).astype("i4")
             level = np.rint((pts[:, 3] - 2.5) / step).astype("i4")
             col = xy[:, 1] * side + xy[:, 0]
-            ids = level * (side * side) + col
+            ids = col * DEPTH + level
             if np.any(xy < 0) or np.any(xy >= side) or np.any(level < 0) or np.any(level >= DEPTH):
                 raise ValueError(f"coordinate outside native grid: {folder.name}")
             if slot == 0:
@@ -155,6 +156,8 @@ def export(source, output, workers):
         "hours": hours,
         "size": side,
         "levels": DEPTH,
+        "layout": "column-level",
+        "toneSteps": TONE_STEPS,
         "origin": meta["origin"] - step / 2,
         "step": step,
         "boundsZ": [float(ground[columns].min()), float(ground[columns].max() + DEPTH * step)],
